@@ -13,8 +13,8 @@
 #define LOGE 2.71828
 #define MINSECTION 10
 #define POINTPAIR_THRHLD 0.65
-#define RANSAC_RADIUS 25
-#define RANSAC_TIMES 1000000
+#define RANSAC_RADIUS 50
+#define RANSAC_TIMES 10000
 #define USM_GAUSSIAN_RADIUS 3//Gaussian radius in USM
 #define LAMDA 3 //lamda is a coefficient controling intensity of USM
 
@@ -46,17 +46,22 @@ void DrawLine(BMP* bmp, int inix, int iniy, int desx, int desy, int r, int g, in
 BMP* ImageStitching(BMP* img1, BMP* img2, double thrhld);
 pointpair* GeneratePointpair(BMP* img1, BMP* img2, double thrhld, int *paircount);
 double determinant(double a11, double a12, double a13, double a21, double a22, double a23, double a31, double a32, double a33);
-affinematrix RANSACAffm(BMP* img1, BMP* img2, double thrhld, int times, double radius);
+double Laplacian_expansion(double** matrix, int initial_size, int col, int** seize);
+affinematrix RANSACAffm(BMP* img1, BMP* img2, double thrhld);
+homographicmatrix RANSACHomo(BMP* img1, BMP* img2, double thrhld);
 pointpair* RANSACMatch(BMP* img1, BMP* img2, double thrhld, int* RANSACcount);
+pointpair* RANSACHomo_match(BMP* img1, BMP* img2, double thrhld, int* RANSACcount);
+double Exponentiation(double base, int exponential);
 int matchjudgement(affinematrix matrix, pointpair *naivepair, int paircount, int* match);//Judge how many point pairs has been matched under certain affine matrix;
 BMP* NaiveUSM(BMP* bmp);
+double GaussianElimination_determinant(double**matrix, int size);
 
 
 int main()
 {
 	BMP *bmp, *bmp1;
-	char filename[] = "C:\\Users\\HP\\Documents\\Visual Studio 2015\\Projects\\ImageProcessing\\Debug\\rm3.bmp";
-	char filename1[] = "C:\\Users\\HP\\Documents\\Visual Studio 2015\\Projects\\ImageProcessing\\Debug\\rm4.bmp";
+	char filename[] = "E:\\Lesson units\\ESTR 1004\\Project\\Test\\RANSAC\\WHML.bmp";
+	char filename1[] = "E:\\Lesson units\\ESTR 1004\\Project\\Test\\RANSAC\\WHMR.bmp";
 	bmp = BMP_ReadFile(filename);
 	BMP_CHECK_ERROR(stderr, -1);
 	bmp1 = BMP_ReadFile(filename1);
@@ -65,17 +70,41 @@ int main()
 	//Your code in between
 	srand(time(NULL));
 	BMP* newbmp = ImageStitching(bmp, bmp1, 200000);
-	char filepath[100] = "C:\\Users\\HP\\Documents\\Visual Studio 2015\\Projects\\ImageProcessing\\Debug\\Tst\\DOWS\\PointPair.bmp";
+	char filepath[100] = "E:\\Lesson units\\ESTR 1004\\Project\\Test\\RANSAC\\WHM_new_match.bmp";
 	BMP_WriteFile(newbmp, filepath);
 	newbmp = HarrisCornerDetector(bmp, 200000);
-	BMP_WriteFile(newbmp, "C:\\Users\\HP\\Documents\\Visual Studio 2015\\Projects\\ImageProcessing\\Debug\\Tst\\DOWS\\HarrisL.bmp");
+	BMP_WriteFile(newbmp, "E:\\Lesson units\\ESTR 1004\\Project\\Test\\RANSAC\\cupL_Harris.bmp");
 	newbmp = HarrisCornerDetector(bmp1, 200000);
-	BMP_WriteFile(newbmp, "C:\\Users\\HP\\Documents\\Visual Studio 2015\\Projects\\ImageProcessing\\Debug\\Tst\\DOWS\\HarrisR.bmp");
+	BMP_WriteFile(newbmp, "E:\\Lesson units\\ESTR 1004\\Project\\Test\\RANSAC\\cupR_Harris.bmp");
 	BMP_Free(newbmp);
 	/////////////////////////////////////////////////////////////////////////
 	BMP_Free(bmp);
 	BMP_Free(bmp1);
 	//BMP_Free(output);
+
+
+	//Determinant test;
+	/*double** matrix = malloc(sizeof(double*) * 8);
+	for (int i = 0; i < 8; i++)
+		matrix[i] = malloc(sizeof(double) * 8);
+	for (int i = 0; i < 8; i++)
+	{
+		for (int j = 0; j < 8; j++)
+		{
+			if (i == j)
+				matrix[i][j] = i + 1;
+			else
+				matrix[i][j] = 0;
+		}
+	}
+
+	double D1 = GaussianElimination_determinant(matrix, 8);
+
+	for (int i = 0; i < 8; i++)
+		free(matrix[i]);
+	free(matrix);*/
+
+
 	return 0;
 }
 
@@ -2317,7 +2346,7 @@ BMP* ImageStitching(BMP* img1, BMP* img2, double thrhld)
 	int hei2 = BMP_GetHeight(img2);
 	int depth = BMP_GetDepth(img1);
 	int paircount = 0;
-	pointpair* points = RANSACMatch(img1, img2, thrhld, &paircount);
+	pointpair* points = RANSACHomo_match(img1, img2, thrhld, &paircount);
 	//pointpair* points = GeneratePointpair(img1, img2, thrhld, &paircount);
 	BMP* newbmp = BMP_Create(wid1 + wid2, max(hei1, hei2), depth);
 	//Draw img1
@@ -2434,7 +2463,31 @@ int matchjudgement(affinematrix matrix, pointpair*naivepair, int paircount, int*
 	return result;
 }
 
-affinematrix RANSACAffm(BMP* img1, BMP* img2, double thrhld, int times, double radius)
+int matchjudgement_homo(homographicmatrix matrix,pointpair* naivepair,int paircount, int* match)
+{
+	int result = 0;
+	for (int i = 0; i < paircount; i++)
+	{
+		//Affine Transformation;
+		point p;
+		p.x = (matrix.H11)*(naivepair[i].p1.x) + (matrix.H12)*(naivepair[i].p1.y) + matrix.H13;
+		p.y = matrix.H21*naivepair[i].p1.x + matrix.H22*naivepair[i].p1.y + matrix.H23;
+		double var = matrix.H31*naivepair[i].p1.x + matrix.H32*naivepair[i].p1.y + 1;
+
+		if (((naivepair[i].p2).x - p.x)*((naivepair[i].p2).x - p.x) + ((naivepair[i].p2).y - p.y)*((naivepair[i].p2).y - p.y) + (var - 1)* (var - 1) < RANSAC_RADIUS*RANSAC_RADIUS && ((naivepair[i].p2).x - p.x)*((naivepair[i].p2).x - p.x) + ((naivepair[i].p2).y - p.y)*((naivepair[i].p2).y - p.y) + (var - 1)* (var - 1) >= 0)
+		{
+			result++;
+			match[i] = 1;
+		}
+		else
+			match[i] = 0;
+	}
+
+	return result;
+}
+
+
+affinematrix RANSACAffm(BMP* img1, BMP* img2, double thrhld)
 {
 	affinematrix best_affm;
 	best_affm.A1 = 0;
@@ -2447,18 +2500,18 @@ affinematrix RANSACAffm(BMP* img1, BMP* img2, double thrhld, int times, double r
 	int count = 0;
 	int paircount = 0;
 	affinematrix result = best_affm;
-	pointpair* naivepair = GeneratePointpair(img1, img2, thrhld, paircount);
+	pointpair* naivepair = GeneratePointpair(img1, img2, thrhld, &paircount);
 	//Initial 3 point pairs;
-	for (int i = 0; i < times; i++)
+	for (int i = 0; i < RANSAC_TIMES; i++)
 	{
 		int initialpair[3] = { -1,-1,-1 };
 
 		initialpair[0] = rand() % paircount;
 		initialpair[1] = rand() % paircount;
-		while (initialpair[1] == initialpair[0] && initialpair[1] == -1)
+		while (initialpair[1] == initialpair[0] || initialpair[1] == -1)
 			initialpair[1] = rand() % paircount;
 		initialpair[2] = rand() % paircount;
-		while (initialpair[2] == initialpair[0] || initialpair[2] == initialpair[1] && initialpair[2] == -1)
+		while (initialpair[2] == initialpair[0] || initialpair[2] == initialpair[1] || initialpair[2] == -1)
 			initialpair[2] = rand() % paircount;
 
 		pointpair pair1 = naivepair[initialpair[0]];
@@ -2533,10 +2586,10 @@ pointpair* RANSACMatch(BMP* img1, BMP* img2, double thrhld, int* RANSACcount)
 
 		initialpair[0] = rand() % paircount;
 		initialpair[1] = rand() % paircount;
-		while (initialpair[1] == initialpair[0] && initialpair[1] == -1)
+		while (initialpair[1] == initialpair[0] || initialpair[1] == -1)
 			initialpair[1] = rand() % paircount;
 		initialpair[2] = rand() % paircount;
-		while (initialpair[2] == initialpair[0] || initialpair[2] == initialpair[1] && initialpair[2] == -1)
+		while (initialpair[2] == initialpair[0] || initialpair[2] == initialpair[1] || initialpair[2] == -1)
 			initialpair[2] = rand() % paircount;
 
 		pointpair pair1 = naivepair[initialpair[0]];
@@ -2694,3 +2747,407 @@ BMP* NaiveUSM(BMP* bmp)
 	BMP_Free(Gaussianbmp);
 	return newbmp;
 }
+
+double Exponentiation(double base, int exponential)//Calculation a double's integer exponentiation;
+{
+	double result = 1;
+	for (int i = 0; i < exponential; i++)
+		result *= base;
+	return result;
+}
+
+double GaussianElimination_determinant(double**matrix, int size)
+{
+	for (int i = 0; i < size; i++)//(i+1)-th pivot;
+	{
+		//Judge whether (i+1)-th pivot equals to 0;
+		if (matrix[i][i] == 0)//Interchange 2 rows;
+		{
+			if (i == size - 1)
+				return 0;
+			else
+			{
+				int change_row = i + 1;
+				while (matrix[change_row][i] == 0 && change_row < size)
+					change_row++;
+				
+				if (change_row == size - 1 && matrix[change_row][i] == 0)//Loop to the last row...
+					return 0;
+				else
+				{
+					if (change_row < size)
+					{
+						for (int j = 0; j < size; j++)
+						{
+							double mid_row = matrix[i][j];
+							matrix[i][j] = matrix[change_row][j];
+							matrix[change_row][j] = mid_row;
+						}
+					}
+				}
+			}
+			//Finish row's interchange;
+
+			for (int j = i + 1; j < size; j++)
+			{
+
+				double coefficient = -matrix[j][i] / matrix[i][i];
+				for (int k = 0; k < size; k++)
+					matrix[j][k] = coefficient*matrix[i][k] + matrix[j][k];
+			}
+		}
+	}
+
+	double result = 1;
+	for (int i = 0; i < size; i++)
+		result *= matrix[i][i];
+
+	return result;
+}
+
+double Laplacian_expansion(double** matrix, int initial_size, int col, int** seize)
+//row and col begin at 0, size begin with 1;
+//Array "seize": Choosen row/col: 1; else: 0.
+{
+	if (col == initial_size - 1)
+	{
+		for (int i = 0; i < initial_size; i++)
+		{
+			for (int j = 0; j < initial_size; j++)
+			{
+				if (seize[i][j] == 0)
+					return matrix[i][j];
+			}
+		}
+	}
+	else
+	{
+		double result = 0;
+		for (int i = 0; i < initial_size; i++)
+		{
+			if (seize[i][col] == 0)
+			{
+				for (int j = 0; j < initial_size; j++)
+				{
+					seize[i][j] = 1;
+					seize[j][col] = 1;
+				}
+
+				result += Exponentiation(-1, i + col)*matrix[i][col] * Laplacian_expansion(matrix, initial_size, col + 1, seize);
+
+				for (int j = 0; j < initial_size; j++)
+				{
+					seize[i][j] = 0;
+					seize[j][col] = 0;
+				}
+			}
+
+		}
+		return result;
+	}
+}
+
+
+homographicmatrix RANSACHomo(BMP* img1, BMP* img2, double thrhld)
+{
+	homographicmatrix best;
+	best.H11 = 0;
+	best.H12 = 0;
+	best.H13 = 0;
+	best.H21 = 0;
+	best.H22 = 0;
+	best.H23 = 0;
+	best.H31 = 0;
+	best.H32 = 0;
+
+	int num_of_match = 0;
+	int count = 0;
+	int paircount = 0;
+	homographicmatrix result = best;
+	pointpair* naivepair = GeneratePointpair(img1, img2, thrhld, &paircount);
+
+	for (int i = 0; i < RANSAC_TIMES; i++)
+	{
+
+		//Initial 4 point pairs;
+		int initialpair[4] = { -1,-1,-1,-1 };
+
+		initialpair[0] = rand() % paircount;
+		initialpair[1] = rand() % paircount;
+		while (initialpair[1] == initialpair[0] || initialpair[1] == -1)
+			initialpair[1] = rand() % paircount;
+		initialpair[2] = rand() % paircount;
+		while (initialpair[2] == initialpair[0] || initialpair[2] == initialpair[1] || initialpair[2] == -1)
+			initialpair[2] = rand() % paircount;
+		initialpair[3] = rand() % paircount;
+		while (initialpair[3] == initialpair[0] || initialpair[3] == initialpair[1] || initialpair[3] == initialpair[2] || initialpair[2] == -1)
+			initialpair[3] = rand() % paircount;
+
+		pointpair pairs[4];
+		for (int k = 0; k < 4; k++)
+			pairs[k] = naivepair[initialpair[k]];
+
+		//From computation...
+		//Au = v;
+		//u = [ H11, H12, H13, H21, H22, H23, H31, H32]^T
+		//v = [ x12, y12, x22, y22, x32, y32, x42, y42]^T
+		//A: [ x11, y11, 1, 0, 0, 0, -x11x12, -x12y11 ]
+		//   [ 0, 0, 0, x11, y11, 1, -x11y12, -y11y12 ]
+		//	 [ x21, y21, 1, 0, 0, 0, -x21x22, -x22y21 ]
+		//   [ 0, 0, 0, x21, y21, 1, -x21y22, -y21y22 ]
+		//	 [ x31, y31, 1, 0, 0, 0, -x31x32, -x32y31 ]
+		//   [ 0, 0, 0, x31, y31, 1, -x31y32, -y31y32 ]
+		//	 [ x41, y41, 1, 0, 0, 0, -x41x42, -x42y41 ]
+		//   [ 0, 0, 0, x41, y41, 1, -x41y42, -y41y42 ]
+
+		double** com_mat = malloc(sizeof(double*) * 8);
+		for (int k = 0; k < 8; k++)
+			com_mat[k] = malloc(sizeof(double) * 8);
+
+		//Generate matrix A;
+		for (int k = 0; k < 4; k++)
+		{
+			com_mat[2 * k][0] = pairs[k].p1.x;
+			com_mat[2 * k][1] = pairs[k].p1.y;
+			com_mat[2 * k][2] = 1;
+			com_mat[2 * k][3] = 0;
+			com_mat[2 * k][4] = 0;
+			com_mat[2 * k][5] = 0;
+			com_mat[2 * k][6] = -pairs[k].p1.x*pairs[k].p2.x;
+			com_mat[2 * k][7] = -pairs[k].p2.x*pairs[k].p1.y;
+			com_mat[2 * k + 1][0] = 0;
+			com_mat[2 * k + 1][1] = 0;
+			com_mat[2 * k + 1][2] = 0;
+			com_mat[2 * k + 1][3] = pairs[k].p1.x;
+			com_mat[2 * k + 1][4] = pairs[k].p1.y;
+			com_mat[2 * k + 1][5] = 1;
+			com_mat[2 * k + 1][6] = -pairs[k].p1.x*pairs[k].p2.y;
+			com_mat[2 * k + 1][7] = -pairs[k].p1.y*pairs[k].p2.y;
+		}
+
+		//Solution vector;
+		double vec[8] = { pairs[0].p2.x , pairs[0].p2.y , pairs[1].p2.x , pairs[1].p2.y , pairs[2].p2.x , pairs[2].p2.y , pairs[3].p2.x , pairs[3].p2.y };
+		//Result matrix...
+		double entry_H[8];
+		for (int k = 0; k < 8; k++)
+			entry_H[k] = 0;
+
+		//First step of Cramer: computing the determinant of matrix;
+		double D1 = GaussianElimination_determinant(com_mat, 8);
+
+		for (int k = 0; k < 8; k++)
+		{
+			double mid[8];
+			for (int var = 0; var < 8; var++)//...I can't find a good name for my variable...
+			{
+				mid[var] = com_mat[var][k];
+				com_mat[var][k] = vec[k];
+			}
+
+			entry_H[k] = GaussianElimination_determinant(com_mat, 8) / D1;
+
+
+			for (int var = 0; var < 8; var++)//Back!
+				com_mat[var][k] = mid[var];
+		}
+
+		//free generated matrix;
+		for (int k = 0; k < 8; k++)
+			free(com_mat[k]);
+		free(com_mat);
+
+		//Assignment results to matrix;
+		best.H11 = entry_H[0];
+		best.H12 = entry_H[1];
+		best.H13 = entry_H[2];
+		best.H21 = entry_H[3];
+		best.H22 = entry_H[4];
+		best.H23 = entry_H[5];
+		best.H31 = entry_H[6];
+		best.H32 = entry_H[7];
+
+		//Compute the number of points successfully matched;
+		if (best.H11 == 0 && best.H12 == 0 && best.H13 == 0 && best.H21 == 0 && best.H22 == 0 && best.H23 == 0 && best.H31 == 0 && best.H32 == 0)
+			continue;
+		else
+		{
+			int* match = malloc(sizeof(int)*(paircount));
+			num_of_match = matchjudgement_homo(best, naivepair, paircount, match);
+			free(match);
+		}
+
+		//Update the affm;
+		if (num_of_match > count)
+		{
+			count = num_of_match;
+			result = best;
+		}
+	}
+
+	free(naivepair);
+	return result;
+
+}
+
+
+pointpair* RANSACHomo_match(BMP* img1, BMP* img2, double thrhld, int* RANSACcount)
+{
+	homographicmatrix best;
+	best.H11 = 0;
+	best.H12 = 0;
+	best.H13 = 0;
+	best.H21 = 0;
+	best.H22 = 0;
+	best.H23 = 0;
+	best.H31 = 0;
+	best.H32 = 0;
+
+	int num_of_match = 0;
+	int count = 0;
+	int paircount = 0;
+	homographicmatrix result = best;
+	pointpair* naivepair = GeneratePointpair(img1, img2, thrhld, &paircount);
+
+	for (int i = 0; i < RANSAC_TIMES; i++)
+	{
+
+		//Initial 4 point pairs;
+		int initialpair[4] = { -1,-1,-1,-1 };
+
+		initialpair[0] = rand() % paircount;
+		initialpair[1] = rand() % paircount;
+		while (initialpair[1] == initialpair[0] || initialpair[1] == -1)
+			initialpair[1] = rand() % paircount;
+		initialpair[2] = rand() % paircount;
+		while (initialpair[2] == initialpair[0] || initialpair[2] == initialpair[1] || initialpair[2] == -1)
+			initialpair[2] = rand() % paircount;
+		initialpair[3] = rand() % paircount;
+		while (initialpair[3] == initialpair[0] || initialpair[3] == initialpair[1] || initialpair[3] == initialpair[2] || initialpair[2] == -1)
+			initialpair[3] = rand() % paircount;
+
+		pointpair pairs[4];
+		for (int k = 0; k < 4; k++)
+			pairs[k] = naivepair[initialpair[k]];
+
+		//From computation...
+		//Au = v;
+		//u = [ H11, H12, H13, H21, H22, H23, H31, H32]^T
+		//v = [ x12, y12, x22, y22, x32, y32, x42, y42]^T
+		//A: [ x11, y11, 1, 0, 0, 0, -x11x12, -x12y11 ]
+		//   [ 0, 0, 0, x11, y11, 1, -x11y12, -y11y12 ]
+		//	 [ x21, y21, 1, 0, 0, 0, -x21x22, -x22y21 ]
+		//   [ 0, 0, 0, x21, y21, 1, -x21y22, -y21y22 ]
+		//	 [ x31, y31, 1, 0, 0, 0, -x31x32, -x32y31 ]
+		//   [ 0, 0, 0, x31, y31, 1, -x31y32, -y31y32 ]
+		//	 [ x41, y41, 1, 0, 0, 0, -x41x42, -x42y41 ]
+		//   [ 0, 0, 0, x41, y41, 1, -x41y42, -y41y42 ]
+
+		double** com_mat = malloc(sizeof(double*) * 8);
+		for (int k = 0; k < 8; k++)
+			com_mat[k] = malloc(sizeof(double) * 8);
+
+		//Generate matrix A;
+		for (int k = 0; k < 4; k++)
+		{
+			com_mat[2 * k][0] = pairs[k].p1.x;
+			com_mat[2 * k][1] = pairs[k].p1.y;
+			com_mat[2 * k][2] = 1;
+			com_mat[2 * k][3] = 0;
+			com_mat[2 * k][4] = 0;
+			com_mat[2 * k][5] = 0;
+			com_mat[2 * k][6] = -pairs[k].p1.x*pairs[k].p2.x;
+			com_mat[2 * k][7] = -pairs[k].p2.x*pairs[k].p1.y;
+			com_mat[2 * k + 1][0] = 0;
+			com_mat[2 * k + 1][1] = 0;
+			com_mat[2 * k + 1][2] = 0;
+			com_mat[2 * k + 1][3] = pairs[k].p1.x;
+			com_mat[2 * k + 1][4] = pairs[k].p1.y;
+			com_mat[2 * k + 1][5] = 1;
+			com_mat[2 * k + 1][6] = -pairs[k].p1.x*pairs[k].p2.y;
+			com_mat[2 * k + 1][7] = -pairs[k].p1.y*pairs[k].p2.y;
+		}
+
+		//Solution vector;
+		double vec[8] = { pairs[0].p2.x , pairs[0].p2.y , pairs[1].p2.x , pairs[1].p2.y , pairs[2].p2.x , pairs[2].p2.y , pairs[3].p2.x , pairs[3].p2.y };
+		//Result matrix...
+		double entry_H[8];
+		for (int k = 0; k < 8; k++)
+			entry_H[k] = 0;
+
+		//First step of Cramer: computing the determinant of matrix;
+		double D1 = GaussianElimination_determinant(com_mat, 8);
+		if (D1 == 0)
+			continue;
+
+		for (int k = 0; k < 8; k++)
+		{
+			double mid[8] = { 0,0,0,0,0,0,0,0 };
+			for (int var = 0; var < 8; var++)//...I can't find a good name for my variable...
+			{
+				mid[var] = com_mat[var][k];
+				com_mat[var][k] = vec[k];
+			}
+
+			entry_H[k] = GaussianElimination_determinant(com_mat, 8) / D1;
+
+			for (int var = 0; var < 8; var++)//Back!
+				com_mat[var][k] = mid[var];
+
+		}
+
+		//free generated matrix;
+		for (int k = 0; k < 8; k++)
+			free(com_mat[k]);
+		free(com_mat);
+
+
+		//Assignment results to matrix;
+		best.H11 = entry_H[0];
+		best.H12 = entry_H[1];
+		best.H13 = entry_H[2];
+		best.H21 = entry_H[3];
+		best.H22 = entry_H[4];
+		best.H23 = entry_H[5];
+		best.H31 = entry_H[6];
+		best.H32 = entry_H[7];
+
+		//Compute the number of points successfully matched;
+		if (best.H11 == 0 && best.H12 == 0 && best.H13 == 0 && best.H21 == 0 && best.H22 == 0 && best.H23 == 0 && best.H31 == 0 && best.H32 == 0)
+			continue;
+		else
+		{
+			int* match = malloc(sizeof(int)*paircount);
+			for (int var = 0; var < paircount; var++)
+				match[var] = 0;
+			num_of_match = matchjudgement_homo(best, naivepair, paircount, match);
+			free(match);
+		}
+
+		//Update the homom;
+		if (num_of_match > count)
+		{
+			count = num_of_match;
+			result = best;
+		}
+
+	}
+
+	int* match = malloc(sizeof(int)*paircount);
+	count = matchjudgement_homo(result, naivepair, paircount, match);
+	pointpair* Matchedpairs = malloc(sizeof(pointpair)*count);
+	*RANSACcount = 0;
+	for (int k = 0; k < paircount; k++)
+	{
+		if (match[k] == 1)
+		{
+			Matchedpairs[*RANSACcount] = naivepair[k];
+			(*RANSACcount)++;
+		}
+	}
+
+	free(match);
+	free(naivepair);
+	return Matchedpairs;
+
+}
+
